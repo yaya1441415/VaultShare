@@ -48,6 +48,7 @@ export class VaultShareStack extends cdk.Stack {
       ],
     });
     
+    
     const filesFn = new lambdaNode.NodejsFunction(this, 'FilesFn', {
       entry: 'lambda/files/index.ts',
       handler: 'handler',
@@ -59,6 +60,25 @@ export class VaultShareStack extends cdk.Stack {
         KEY_ARN: filesKey.keyArn,
       },
     });
+
+    const reportsRole = new iam.Role(this, 'ReportsReaderRole',{
+      roleName: 'VaultShareReportsReader',
+      assumedBy: new iam.ArnPrincipal(`arn:aws:iam::${this.account}:user/yahya-dev`),  //trust policy
+      description: 'Assumable role for reading reports - STS demo',
+      maxSessionDuration: cdk.Duration.hours(1),
+    })
+
+    reportsRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject'],
+      resources: [filesBucket.arnForObjects('reports/*')]
+    }))
+
+    reportsRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['kms:Decrypt'],
+      resources: [filesKey.keyArn],
+    }))
 
     //bucket level policy 
     filesFnRole.addToPolicy(new iam.PolicyStatement({
@@ -98,6 +118,7 @@ export class VaultShareStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BucketName', { value: filesBucket.bucketName})
     new cdk.CfnOutput(this, 'KeyArn', { value: filesKey.keyArn })
     new cdk.CfnOutput(this, 'FunctionName', {value: filesFn.functionName });
-    new cdk.CfnOutput(this, 'RoleArn', {value: filesFnRole.roleArn})    
+    new cdk.CfnOutput(this, 'RoleArn', {value: filesFnRole.roleArn})  
+    new cdk.CfnOutput(this, 'ReportsRoleArn', { value: reportsRole.roleArn });  
   }
 }
