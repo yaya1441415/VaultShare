@@ -152,6 +152,27 @@ export class VaultShareStack extends cdk.Stack {
       accessTokenValidity: cdk.Duration.hours(1),
       idTokenValidity: cdk.Duration.hours(1),
       refreshTokenValidity: cdk.Duration.days(30),
+
+      //
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,   // the secure flow
+          implicitCodeGrant: false,       // deprecated, don't use
+        },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+        ],
+
+        //where cognito 
+        callbackUrls: ['http://localhost:5173/callback'],
+        logoutUrls: ['http://localhost:5173/']
+      },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+        // Google gets added here.
+      ],
     })
 
     const identityPool = new cognito.CfnIdentityPool(this, 'VaultShareIdentityPool', {
@@ -215,6 +236,7 @@ export class VaultShareStack extends cdk.Stack {
     const httpApi = new apigwv2.HttpApi(this, 'VaultShareApi', {
       apiName: 'vaultshare-api',
     })
+
     httpApi.addRoutes({
       path: '/files',
       methods: [apigwv2.HttpMethod.GET],
@@ -269,6 +291,13 @@ export class VaultShareStack extends cdk.Stack {
       },
     });
 
+    const userPoolDomain = userPool.addDomain('VaultShareDomain', {
+      cognitoDomain: {
+        //must be globally unicque across all of AWS
+        domainPrefix: 'vaultshare-yahya929',
+      }
+    })
+
     //Outputs
     new cdk.CfnOutput(this, 'BucketName', { value: filesBucket.bucketName})
     new cdk.CfnOutput(this, 'KeyArn', { value: filesKey.keyArn })
@@ -279,5 +308,6 @@ export class VaultShareStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
     new cdk.CfnOutput(this, 'IdentityPoolId', { value: identityPool.ref });  
     new cdk.CfnOutput(this, 'ApiUrl', { value: httpApi.apiEndpoint });
+    new cdk.CfnOutput(this, 'HostedUiDomain', { value: userPoolDomain.baseUrl(),});
   }
 }
