@@ -7,7 +7,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
-
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigwv2int from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
 
@@ -181,6 +182,51 @@ export class VaultShareStack extends cdk.Stack {
       )
     })
 
+    //verifies jwt in code, then acts on thealler's behalf.
+    const apiFnRole = new iam.Role(this, 'ApiFnRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Execution role for the VaultShare API',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    })
+
+    apiFnRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:ListBucket'],
+      resources: [filesBucket.bucketArn],
+    }))
+
+    const apiFn = new lambdaNode.NodejsFunction(this, 'ApiFn', {
+      entry: 'lambda/api/index.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      role: apiFnRole,
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        BUCKET_NAME: filesBucket.bucketName,
+        USER_POOL_ID: userPool.userPoolId,
+        CLIENT_ID: userPoolClient.userPoolClientId,
+      },
+    })
+
+
+    const httpApi = new apigwv2.HttpApi(this, 'VaultShareApi', {
+      apiName: 'vaultshare-api',
+    })
+    httpApi.addRoutes({
+      path: '/files',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2int.HttpLambdaIntegration('FilesInt', apiFn),
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/files',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2int.HttpLambdaIntegration('AdminInt', apiFn),
+    });
+
     authenticatedRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
@@ -215,6 +261,7 @@ export class VaultShareStack extends cdk.Stack {
       groupName: 'admins',
       description: 'Full bucket access',
     })
+
     new cognito.CfnIdentityPoolRoleAttachment(this, 'IdentityPoolRoles', {
       identityPoolId: identityPool.ref,
       roles: {
@@ -231,5 +278,6 @@ export class VaultShareStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
     new cdk.CfnOutput(this, 'IdentityPoolId', { value: identityPool.ref });  
+    new cdk.CfnOutput(this, 'ApiUrl', { value: httpApi.apiEndpoint });
   }
 }
