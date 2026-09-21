@@ -6,8 +6,7 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-
-
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 
 
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -114,11 +113,123 @@ export class VaultShareStack extends cdk.Stack {
       resources: ['*'],
     }))
 
+    //user pool -> auth only and issues jwts
+    const userPool = new cognito.UserPool(this, 'VaultShareUserPool', {
+      userPoolName: 'vaultshare-users',
+      selfSignUpEnabled: true,// allows users to register themselves via the sign-up page
+      signInAliases: {email: true},//feilds users can use to sign in
+      autoVerify: {email: true},
+      standardAttributes: { //schema
+        email: { required: true, mutable: false },
+      },
+      passwordPolicy: {
+        minLength: 12,
+        // Password must contain at least one lowercase letter.
+        requireLowercase: true,
+
+        // Password must contain at least one uppercase letter.
+        requireUppercase: true,
+
+        // Password must contain at least one digit (0-9).
+        requireDigits: true,
+
+        // Password must contain at least one symbol (!@#$ etc.).
+        requireSymbols: true,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    })
+
+    const userPoolClient = new cognito.UserPoolClient(this, 'VaultShareWebClient', {
+      userPool,
+      userPoolClientName: 'vaultshare-web',
+      generateSecret:false,
+      authFlows: {
+        userPassword: true,   // needed for CLI testing
+        userSrp: true,        // what a real frontend uses
+      },
+      accessTokenValidity: cdk.Duration.hours(1),
+      idTokenValidity: cdk.Duration.hours(1),
+      refreshTokenValidity: cdk.Duration.days(30),
+    })
+
+    const identityPool = new cognito.CfnIdentityPool(this, 'VaultShareIdentityPool', {
+      identityPoolName: 'vaultshare_identities',
+      allowUnauthenticatedIdentities: false,// no guest access
+      cognitoIdentityProviders: [{
+        clientId: userPoolClient.userPoolClientId,
+        providerName: userPool.userPoolProviderName,
+        serverSideTokenCheck: true,//verify user still exist and not signed out.
+      }],
+    })
+
+    const authenticatedRole = new iam.Role(this, 'CognitoAuthenticatedRole', {
+      roleName: 'VaultShareAuthenticatedUser',
+      description: 'Assumed by authenticated Cognito users',
+      assumedBy: new iam.FederatedPrincipal(
+        'cognito-identity.amazonaws.com',
+        {
+
+          StringEquals: {
+            'cognito-identity.amazonaws.com:aud': identityPool.ref,
+          },
+          'ForAnyValue:StringLike': {
+            'cognito-identity.amazonaws.com:amr': 'authenticated',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity',   // NOT sts:AssumeRole
+      )
+    })
+
+    authenticatedRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+      resources: [
+        `${filesBucket.bucketArn}/users/` +
+          '${cognito-identity.amazonaws.com:sub}/*',
+      ],
+    }));
+
+    authenticatedRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:ListBucket'],
+      resources: [filesBucket.bucketArn], //which target the statement applies to.
+      conditions: {
+        StringLike: {
+          's3:prefix': ['users/${cognito-identity.amazonaws.com:sub}/*'],
+        },
+      },
+    }));
+
+    authenticatedRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['kms:GenerateDataKey', 'kms:Decrypt'],
+      resources: [filesKey.keyArn],
+      conditions: {
+        StringEquals: { 'kms:ViaService': `s3.${this.region}.amazonaws.com` },
+      },
+    }));
+
+    new cognito.CfnUserPoolGroup(this, 'AdminsGroup', {
+      userPoolId: userPool.userPoolId,
+      groupName: 'admins',
+      description: 'Full bucket access',
+    })
+    new cognito.CfnIdentityPoolRoleAttachment(this, 'IdentityPoolRoles', {
+      identityPoolId: identityPool.ref,
+      roles: {
+        authenticated: authenticatedRole.roleArn,
+      },
+    });
+
     //Outputs
     new cdk.CfnOutput(this, 'BucketName', { value: filesBucket.bucketName})
     new cdk.CfnOutput(this, 'KeyArn', { value: filesKey.keyArn })
     new cdk.CfnOutput(this, 'FunctionName', {value: filesFn.functionName });
     new cdk.CfnOutput(this, 'RoleArn', {value: filesFnRole.roleArn})  
-    new cdk.CfnOutput(this, 'ReportsRoleArn', { value: reportsRole.roleArn });  
+    new cdk.CfnOutput(this, 'ReportsRoleArn', { value: reportsRole.roleArn });
+    new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
+    new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
+    new cdk.CfnOutput(this, 'IdentityPoolId', { value: identityPool.ref });  
   }
 }
